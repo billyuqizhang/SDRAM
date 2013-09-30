@@ -1,0 +1,206 @@
+----------------------------------------------------------------------------
+Log:	
+Revise from Xilinx designed Micron SDRAM connection with Virtex V300bg432-6
+1.1 Jennifer Tran  06/16/1999
+	- change controller state machine to 1-hot
+	- add test bench, micron model
+	- add synthesis script, place & route script, constraint file
+	- add README file
+	- include VHDL version
+
+1.13 Jennifer Tran  06/28/1999
+	- change p_int.v to sys_int.v, 
+	  remove ale signal, 
+	  register all inputs from the system to guarantee 125MHz operation
+	
+1.14 Jennifer Tran  09/09/1999
+	- fix OFFSET constraint in par/top.ucf
+	- minor changes to support FPGA Express and Synplicity
+	- Note: simplicity users still need to remove use std.textio.all in all vhd files
+
+2.1	Bill yuqizhang	22/09/2013
+	-	Revise it for adopt to Altera Cyclone 4 FPGA
+----------------------------------------------------------------------------	
+======================
+= Design Description =
+======================
+The SDRAM controller is designed for the Virtex V300bg432-6. It's simulated with Micron SDRAM models.  The design is verified with backannotated simulation at 125MHz
+
+	
+====================
+= Design Hierarchy =
+====================
+sdrm			(top level)
+  sys_int		(system interface)
+  sdrm_t		(SDRAM controller)
+    sdrmc_state 	(state machine)
+    brst_cntr 		(burst counter)
+    rcd_cntr 		(ras-cas-delay counter)
+    ref_cntr 		(refresh counter)
+    cslt_cntr 		(cas-latency counter)
+    ki_cntr		(keep-idle-during-refresh-active counter)
+
+
+=================
+= Design  Notes =
+=================
+
+DLL:  (in sdrm module)
+----
+  . dll0: use for clock mirror, provide the clock for the external SDRAM
+  . dll1: use for deskewing clock signal inside the FPGA (Clk_j), also provide clk2x (Clk_i)
+
+Use global clock buffers for clock signals:
+-------------------------------------------
+  .  There are 4 BUFGPs in Virtex.  They provide low-skew high-fanout routings.
+
+Use LUT Shift Register to delay signals by certain number of clock cycles
+--------------------------------------------------------------------------
+  . delay DLL lock signal (in sdrm_t module)
+  . delay data (in sys_int module) 
+
+Registering all inputs and ouputs to SDRAM: (in sdrm module)
+-------------------------------------------
+  . All signals going to the SDRAM are registered in the IOB 
+    This makes it easy to calculate timings b/t the FPGA and SDRAM
+    For write cycles, add FPGA Tiockp to SDRAM Tsu
+    For read cycles, add SDRAM Tac to FPGA Tsu and
+  . The tristate signal for the data lines are also registered in the IOB 
+  . Instead of 1 tristate signal for the Data lines, 
+    we duplicate it to 4 signals, each having 8 loads.  
+    This was done to reduce net delays on that tristate signal.  
+    The tristate signal is sd_doe_n in sdrm 
+
+Use fast output buffers: (in sdrm module)
+------------------------
+  . IOBUF_F_12: all signals interfacing to SDRAM
+  These may create more bounce but are ~2ns faster than regular OBUFs	
+
+Use NODELAY mode for input buffers: (in ucf constraint file)
+-----------------------------------
+  . The default IBUF has additional delay to give negative hold time.  This eliminates pad-to-pad hold time
+  . Set NODELAY attribute on inputs to reduce IBUF delay by about 1.5ns
+
+Set timing constraints for place & route tool: (in ucf constraint file)
+---------------------------------------------
+   . set clock period on input clock (Clkp)
+   . set periods b/t clk1x and clk2x (Clk_j, Clk_i)
+   . set OFFSET constraint for inputs and outputs 
+
+
+================
+= Instructions = 
+================
+  . to run functional simulation: 
+	cd func_sim
+	run_sim
+  . to compile the design
+	cd synth
+	run_synth
+	cd ../par
+	run_par
+  . to run backannotated simulation:
+	cd post_route
+	run_sim
+
+
+==============================
+= Frequently asked questions =
+==============================
+1. Is RAS to CAS delay programmable?
+------------------------------------
+  . No, the data registers has a fixed number of pipeline stages.  This reference design supports RAS-to-CAS delay of 2 clock cycles.  If you need to adjust to a different RAS-to-CAS delay, change the SRL16 Address values in sys_int.v.  The address value should be (Trcd/Tck) +1
+  . Note, you still need to write the RAS-to-CAS value to the Controller's Mode Reg during PRECHARGE command.  The value should be (Trcd/Tck) -2
+
+
+2. How do I modify the design to support 128Mb/256Mb SDRAM parts with a 64-bit data bus?
+----------------------------------------------------------------------------------------
+  . You'll need to add more IO buffers for the extra data and address signals (in sdrm.v) 
+  . You'll need to change ADDR_MSB and DATA_MSB (in define.v) 
+  . In the current design, instead of 1 tristate signal for the Data lines, 
+    we duplicate it to 4 signals, each having 8 loads.  
+    This was done to reduce net delays on that tristate signal.  
+    You may need to add 4 more tristate lines if you're going to 64-bit.  
+    The tristate signal is sd_doe_n in sdrm.v 
+
+=========
+= files =
+=========
+
+verilog:
+  README
+  src/
+    brst_cntr.v		
+    cslt_cntr.v
+    define.v
+    ki_cntr.v
+    sys_int.v
+    rcd_cntr.v
+    ref_cntr.v
+    sdrm.v
+    sdrm_t.v
+    sdrmc_state.v
+  micron/		SDRAM model from micron
+    mt48lc1m16a1-8a.v
+  func_sim/		functional simulation
+    tb_sdrm.v		  test bench
+    string_decode_fn.v	  display SDRAM state in ASCII
+    run_sim		  script to run verilog
+    func_sim.log	  verilog log file
+    func_sim.vpd	  vpd file for virsim waveform viewer
+    func_sim.cfg	  configuration file for virsim
+  synth/		synthesis
+    run_synth		  script to run FPGA compiler
+    sdrm.scr		  Synopsys FPGA Compiler script
+    setup.scr		  setup file for FPGA Compiler
+  par/			place & route
+    run_par		  script to run Xilinx place & route tool
+    sdrm.ucf		  constraint file
+    sdrm.edf		  link to ../synth/sdrm.edf (edif netlist)
+  post_route/		backannotated simulation
+    run_sim		  script to run verilog simulation
+    sdrm_par.v		  link to ../par/sdrm_par.v
+    sdrm_par.sdf	  link to ../par/sdrm_par.sdf
+    tb_post_route.v	  test bench  
+
+  
+vhdl:
+  README
+  src/
+    brst_cntr.vhd
+    cslt_cntr.vhd
+    ihdlutil.vhd
+    ki_cntr.vhd
+    sys_int.vhd
+    rcd_cntr.vhd
+    ref_cntr.vhd
+    sdrm.vhd
+    sdrm_t.vhd
+    sdrmc_state.vhd
+    t.vhd
+    t_sdrm.vhd
+    vrlgutil.vhd
+  micron/
+    ed_comnd.vhd
+    io_utils.vhd
+    mt48lc1m16a1-8a.v
+    mti_pkg.vhd
+    readme.txt
+    stdlogar.vhd
+    test.txt
+    test.vhd
+    util1164.vhd
+    vec_gen.vhd
+  func_sim/
+    README
+    modelsim.ini
+    run_sim
+    tb_sdrm.vhd
+  synth/
+    compile_scr
+    sdrm.scr
+    setup.scr
+  par/
+    run_par
+    sdrm.ucf
+    
